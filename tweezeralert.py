@@ -14,68 +14,76 @@ CHAT_ID = os.environ.get("CHAT_ID")
 TOLERANCE = 0.0015
 last_report_date = ""
 last_update_id = 0
+IST = timezone(timedelta(hours=5, minutes=30))
 
 def send_telegram(msg):
     try:
+        if not BOT_TOKEN or not CHAT_ID:
+            print("BOT_TOKEN/CHAT_ID Missing!")
+            return
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
-    except:
-        pass
+        r = requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=15)
+        print(f"Telegram Sent: {r.status_code} {r.text}")
+    except Exception as e:
+        print(f"Telegram Error: {e}")
 
 def get_candles():
     try:
-        end = int(datetime.now().timestamp())
-        start = end - (86400*7)
+        end = int(datetime.now(timezone.utc).timestamp())
+        start = end - (86400*10) # 10 days for safety
         url = "https://cdn.india.deltaex.org/v2/history/candles"
         params = {"resolution": "1d", "symbol": "BTCUSD", "start": start, "end": end}
-        r = requests.get(url, params=params, timeout=10)
+        r = requests.get(url, params=params, timeout=15)
         data = r.json()
         result = data.get('result', [])
+        print(f"Got {len(result)} candles")
         return result
     except Exception as e:
         print(f"Candle Error: {e}")
         return []
 
 def get_ist_time():
-    return datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    return datetime.now(timezone.utc).astimezone(IST)
 
 def format_report():
     candles = get_candles()
     if len(candles) < 2:
-        return f"No data available - Got {len(candles)} candles"
-    
-    # Handle dict format from new API
-    if isinstance(candles[-1], dict):
-        prev = candles[-2]
-        curr = candles[-1]
-        prev_o = float(prev.get('open', prev.get('o', 0)))
-        prev_h = float(prev.get('high', prev.get('h', 0)))
-        prev_l = float(prev.get('low', prev.get('l', 0)))
-        prev_c = float(prev.get('close', prev.get('c', 0)))
-        curr_o = float(curr.get('open', curr.get('o', 0)))
-        curr_h = float(curr.get('high', curr.get('h', 0)))
-        curr_l = float(curr.get('low', curr.get('l', 0)))
-        curr_c = float(curr.get('close', curr.get('c', 0)))
-        prev_time = prev.get('time', 0)
-        curr_time = curr.get('time', 0)
-    else:
-        prev = candles[-2]; curr = candles[-1]
-        prev_o, prev_h, prev_l, prev_c = float(prev[1]), float(prev[2]), float(prev[3]), float(prev[4])
-        curr_o, curr_h, curr_l, curr_c = float(curr[1]), float(curr[2]), float(curr[3]), float(curr[4])
-        prev_time = prev[0]/1000; curr_time = curr[0]/1000
+        return f"⚠️ No data - Got {len(candles)} candles. API Issue."
 
-    prev_date = datetime.fromtimestamp(prev_time).strftime('%d-%b')
-    curr_date = datetime.fromtimestamp(curr_time).strftime('%d-%b-%Y')
-    
-    same_high = abs(curr_h - prev_h) / prev_h < TOLERANCE if prev_h else False
-    same_low = abs(curr_l - prev_l) / prev_l < TOLERANCE if prev_l else False
+    try:
+        if isinstance(candles[-1], dict):
+            prev = candles[-2]; curr = candles[-1]
+            prev_o = float(prev.get('open', prev.get('o', 0)))
+            prev_h = float(prev.get('high', prev.get('h', 0)))
+            prev_l = float(prev.get('low', prev.get('l', 0)))
+            prev_c = float(prev.get('close', prev.get('c', 0)))
+            curr_o = float(curr.get('open', curr.get('o', 0)))
+            curr_h = float(curr.get('high', curr.get('h', 0)))
+            curr_l = float(curr.get('low', curr.get('l', 0)))
+            curr_c = float(curr.get('close', curr.get('c', 0)))
+            prev_time = prev.get('time', 0)
+            curr_time = curr.get('time', 0)
+        else:
+            prev = candles[-2]; curr = candles[-1]
+            prev_o, prev_h, prev_l, prev_c = float(prev[1]), float(prev[2]), float(prev[3]), float(prev[4])
+            curr_o, curr_h, curr_l, curr_c = float(curr[1]), float(curr[2]), float(curr[3]), float(curr[4])
+            prev_time = prev[0]/1000 if prev[0] > 1e12 else prev[0]
+            curr_time = curr[0]/1000 if curr[0] > 1e12 else curr[0]
 
-    if same_high and prev_c > prev_o and curr_c < curr_o:
-        return f"🔴 *TOP FORMED*\n{prev_date} + {curr_date}\nHigh {prev_h:.1f} vs {curr_h:.1f}\nAction: SHORT"
-    elif same_low and prev_c < prev_o and curr_c > curr_o:
-        return f"🟢 *BOTTOM FORMED*\n{prev_date} + {curr_date}\nLow {prev_l:.1f} vs {curr_l:.1f}\nAction: LONG"
-    else:
-        return f"⚪ *NOT FORMED*\n{prev_date} + {curr_date}\nH: {prev_h:.0f}/{curr_h:.0f} L: {prev_l:.0f}/{curr_l:.0f}\nNo Tweezer Today"
+        prev_date = datetime.fromtimestamp(prev_time, tz=IST).strftime('%d-%b')
+        curr_date = datetime.fromtimestamp(curr_time, tz=IST).strftime('%d-%b-%Y')
+        
+        same_high = abs(curr_h - prev_h) / prev_h < TOLERANCE if prev_h else False
+        same_low = abs(curr_l - prev_l) / prev_l < TOLERANCE if prev_l else False
+
+        if same_high and prev_c > prev_o and curr_c < curr_o:
+            return f"🔴 *TOP FORMED*\n{prev_date} + {curr_date}\nHigh {prev_h:.1f} vs {curr_h:.1f}\nAction: SHORT"
+        elif same_low and prev_c < prev_o and curr_c > curr_o:
+            return f"🟢 *BOTTOM FORMED*\n{prev_date} + {curr_date}\nLow {prev_l:.1f} vs {curr_l:.1f}\nAction: LONG"
+        else:
+            return f"⚪ *NOT FORMED*\n{prev_date} + {curr_date}\nH: {prev_h:.0f}/{curr_h:.0f} L: {prev_l:.0f}/{curr_l:.0f}\nNo Tweezer Today"
+    except Exception as e:
+        return f"Error in format_report: {e}"
 
 def check_commands():
     global last_update_id
@@ -86,30 +94,35 @@ def check_commands():
             last_update_id = update['update_id']
             text = update.get('message', {}).get('text', '').lower()
             if text == '/start':
-                send_telegram("✅ *Bot is LIVE*\n\nDaily 5:31 AM IST Tweezer Report will be sent\nBTC Tweezer Top/Bottom Detection\n\nCommands:\n/start - Live check\n/info - Bot info\n/check - Check now\n/today - Today's status\n/help - Help")
-            elif text == '/info':
-                send_telegram("ℹ️ *TweezerAlert Bot Info*\n\nSymbol: BTCUSD (Delta India)\nStrategy: Tweezer Top/Bottom\nTime: Daily 5:31 AM IST\nTolerance: 0.15%\n\nDeveloped for Trading")
-            elif text in ['/check', '/today']:
+                send_telegram("✅ *Bot is LIVE*\nDaily 5:31 AM IST Tweezer Report\n/check - Check now")
+            elif text in ['/check', '/today', '/info', '/help']:
                 report = format_report()
                 send_telegram(f"*Current Status:*\n{report}")
-            elif text == '/help':
-                send_telegram("📋 *Commands:*\n\n/start - Bot live status\n/info - Bot information\n/check or /today - Check tweezer now\n/help - This menu")
-    except:
-        pass
+    except Exception as e:
+        print(f"Command Error: {e}")
 
 def bot_loop():
     global last_report_date
+    print("Bot Loop Started...")
+    # Send startup message
+    send_telegram("🚀 *Bot Restarted & Live on Render*")
     while True:
-        check_commands()
-        ist_now = get_ist_time()
-        if ist_now.hour == 5 and ist_now.minute == 31:
-            today_str = ist_now.strftime('%d-%b-%Y')
-            if last_report_date != today_str:
-                report = format_report()
-                send_telegram(f"*5:31 AM Daily Report*\n{report}")
-                last_report_date = today_str
-        time.sleep(3)
+        try:
+            check_commands()
+            ist_now = get_ist_time()
+            # FIX: 5:31 to 5:35 window + date check
+            if ist_now.hour == 5 and 31 <= ist_now.minute <= 35:
+                today_str = ist_now.strftime('%d-%b-%Y')
+                if last_report_date != today_str:
+                    print(f"Triggering report for {today_str}")
+                    report = format_report()
+                    send_telegram(f"*5:31 AM Daily Report*\n{report}")
+                    last_report_date = today_str
+        except Exception as e:
+            print(f"Loop Error: {e}")
+        time.sleep(10)
 
+# IMPORTANT: Thread start here, not inside __main__
 threading.Thread(target=bot_loop, daemon=True).start()
 
 if __name__ == "__main__":
